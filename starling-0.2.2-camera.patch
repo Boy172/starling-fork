@@ -1,0 +1,136 @@
+--- a/crates/horizon-client/src/touch.rs
++++ b/crates/horizon-client/src/touch.rs
+@@ -363,6 +363,8 @@
+     /// Three fingers landing together show or hide the Stats overlay. Off by default: many
+     /// play with three fingers.
+     pub three_fingers: bool,
++    /// Attack and Use fingers can drag to turn the camera while keeping the button held.
++    pub button_look: bool,
+     /// Buttons of the player's own; their places are among `extra`.
+     pub custom: Vec<CustomButton>,
+ }
+@@ -415,6 +417,7 @@
+             vibrate: true,
+             gyro: false,
+             three_fingers: false,
++            button_look: true,
+             custom: Vec::new(),
+         }
+     }
+@@ -469,6 +472,7 @@
+         config.vibrate = value["vibrate"].as_bool().unwrap_or(true);
+         config.gyro = value["gyro"].as_bool().unwrap_or(false);
+         config.three_fingers = value["three_fingers"].as_bool().unwrap_or(false);
++        config.button_look = value["button_look"].as_bool().unwrap_or(true);
+         if value["stick"].is_object() {
+             read(&value["stick"], &mut config.stick, MIN_SIZE);
+             if config.stick.show == Show::Off {
+@@ -609,6 +613,7 @@
+             "vibrate": self.vibrate,
+             "gyro": self.gyro,
+             "three_fingers": self.three_fingers,
++            "button_look": self.button_look,
+             "stick": entry(&self.stick),
+             "buttons": buttons,
+             "mods": mods,
+@@ -729,6 +734,8 @@
+     pub dpad: bool,
+     /// Taps and presses on the view act on what is under the finger ([`Interact::Tap`]).
+     pub tap: bool,
++    /// Attack and Use fingers may turn the view while held.
++    pub button_look: bool,
+     /// The buttons that work: centre, radius, and how opaque they are drawn (0 for a ghost).
+     pub buttons: Vec<(Button, [f32; 2], f32, f32)>,
+     /// The mods' buttons that work, the same way: their index in [`LayoutConfig::extra`], and
+@@ -766,6 +773,7 @@
+             stick_alpha: config.alpha(&config.stick),
+             dpad: config.dpad == Some(true),
+             tap: config.interact == Interact::Tap,
++            button_look: config.button_look,
+             buttons: config
+                 .buttons
+                 .iter()
+@@ -956,6 +964,8 @@
+         holding: bool,
+     },
+     Button(Button, Instant),
++    /// Attack or Use stays pressed while a deliberate drag turns the view.
++    ButtonLook { button: Button, start: [f32; 2], last: [f32; 2], dragged: bool },
+     /// A finger on the D-pad: the cell it is on (None off the pad) and whether it sprints.
+     DPad {
+         cell: Option<[i8; 2]>,
+@@ -1088,7 +1098,11 @@
+                     if button == Button::Sneak {
+                         self.tap_sneak();
+                     }
+-                    Role::Button(button, now)
++                    if layout.button_look && matches!(button, Button::Attack | Button::Use) {
++                        Role::ButtonLook { button, start: p, last: p, dragged: false }
++                    } else {
++                        Role::Button(button, now)
++                    }
+                 } else if let Some(slot) = layout.slot_at(p) {
+                     out.push(Action::Slot(slot));
+                     Role::Spent
+@@ -1193,6 +1207,16 @@
+                         }
+                         *last = p;
+                     }
++                    Role::ButtonLook { start, last, dragged, .. } => {
++                        if !*dragged && dist(p, *start) > layout.unit * 0.15 {
++                            *dragged = true;
++                        }
++                        if *dragged {
++                            let scale = layout.look_scale();
++                            out.push(Action::Look((p[0] - last[0]) * scale, (p[1] - last[1]) * scale));
++                        }
++                        *last = p;
++                    }
+                     Role::DPad { cell, sprinting } => {
+                         let to = layout.dpad_cell(p);
+                         out.extend(dpad_step(*cell, to));
+@@ -1281,7 +1305,7 @@
+             }
+             Role::Button(Button::Pause, _) if ended => vec![Action::Press(Button::Pause)],
+             Role::Button(Button::Pause, _) => Vec::new(),
+-            Role::Button(button, _) => vec![Action::Release(button)],
++            Role::Button(button, _) | Role::ButtonLook { button, .. } => vec![Action::Release(button)],
+             Role::Spent => Vec::new(),
+         }
+     }
+@@ -1355,7 +1379,7 @@
+     pub fn held(&self, button: Button) -> bool {
+         self.fingers
+             .iter()
+-            .any(|(_, r)| matches!(r, Role::Button(b, _) if *b == button))
++            .any(|(_, r)| matches!(r, Role::Button(b, _) | Role::ButtonLook { button: b, .. } if *b == button))
+     }
+ }
+ 
+@@ -2566,6 +2590,26 @@
+     }
+ 
+     #[test]
++    fn attack_and_use_can_turn_the_view_while_remaining_held() {
++        let (l, now) = (layout(), Instant::now());
++        let mut t = TouchControls::default();
++        let attack = [2608.0, 879.0];
++        assert_eq!(
++            t.event(&l, 7, TouchPhase::Started, attack, now),
++            vec![Action::Press(Button::Attack)]
++        );
++        assert!(t.held(Button::Attack));
++        let turn = t.event(&l, 7, TouchPhase::Moved, [2640.0, 879.0], now);
++        assert!(matches!(turn[..], [Action::Look(dx, dy)] if dx > 0.0 && dy == 0.0));
++        assert!(t.held(Button::Attack));
++        assert_eq!(
++            t.event(&l, 7, TouchPhase::Ended, [2640.0, 879.0], now),
++            vec![Action::Release(Button::Attack)]
++        );
++        assert!(!t.held(Button::Attack));
++    }
++
++    #[test]
+     fn the_finger_aims_until_it_turns_the_view_and_while_it_holds() {
+         let (l, now) = (layout(), Instant::now());
+         let mut t = TouchControls::default();
