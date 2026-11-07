@@ -1,0 +1,67 @@
+name: Starling 0.2.2 - Camera Look APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_symbols:
+        description: Include native symbols for profiling
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: starling-022-camera-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply camera patch
+        run: |
+          set -euo pipefail
+          git apply --check starling-0.2.2-camera.patch
+          git apply starling-0.2.2-camera.patch
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android build tools
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "build-tools;35.0.0" "platforms;android-36" "ndk;28.2.13676358" > /dev/null
+
+      - name: Install Rust for Android and cargo-ndk
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-linux-android
+          rustup default stable
+          cargo install cargo-ndk --version 3.5.4 --locked
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: starling-022-camera
+          save-if: ${{ github.ref == 'refs/heads/android' }}
+
+      - name: Build Starling APK with camera patch
+        env:
+          HORIZON_ANDROID_KEY_ALIAS: horizon-debug
+        run: |
+          python packaging/android/build_apk.py --profile quick ${{ inputs.keep_symbols && '--keep-symbols' || '' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: starling-0.2.2-camera-look-arm64
+          path: target/android/starling-*.apk
+          if-no-files-found: error
+          retention-days: 30
